@@ -1,0 +1,18 @@
+{
+  "n": 20,
+  "m": 2,
+  "seed": 61,
+  "capacity_ratio": 0.5,
+  "capacities_mode": "random",
+  "weight_min": 1.0,
+  "weight_max": 100.0,
+  "profit_min": 1.0,
+  "profit_max": 100.0,
+  "weights_integer": true,
+  "profits_integer": true,
+  "generated_at": "2026-06-23T12:25:50.056891",
+  "capacities": [
+    229.3597954250066,
+    205.14020457499336
+  ]
+}
