@@ -27,6 +27,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
+from algorithms import brute_force, simulated_annealing
 
 # Добавляем пути для импорта модулей
 sys.path.append(str(Path(__file__).parent))
@@ -53,10 +54,11 @@ from algorithms import brute_force
 # Регистрация алгоритмов
 ALGORITHMS = {
     'brute': brute_force.solve,
-    # 'sa': simulated_annealing.solve,      # будет добавлен позже
+    'sa': simulated_annealing.solve,      # будет добавлен позже
     # 'ts': tabu_search.solve,
     # 'ga': genetic_algorithm.solve,
 }
+
 
 # Максимальное n для брутфорса (защита от дурака)
 BRUTE_MAX_N = 25
