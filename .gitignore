@@ -1,0 +1,25 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# VS Code settings
+.vscode/
+
+# Data and results (чтобы не заливать большие сгенерированные файлы)
+data/
+results/
+*.csv
+*.log
+
+# Jupyter notebooks (если будешь использовать, пока закомментируй, но на всякий случай)
+# *.ipynb
+
+# OS files
+.DS_Store
+Thumbs.db
