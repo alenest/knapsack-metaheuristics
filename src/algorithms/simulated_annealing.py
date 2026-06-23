@@ -22,27 +22,20 @@ from core.utils import (
 def generate_initial_solution(weights: List[float], capacities: List[float],
                               rng: random.Random) -> List[int]:
     """
-    Генерирует начальное решение жадным способом:
-    предметы сортируются по убыванию ценности/вес, затем распределяются
-    по рюкзакам с наименьшей загрузкой.
+    Генерирует начальное решение жадным способом с перемешиванием:
+    предметы обрабатываются в случайном порядке, каждый помещается
+    в рюкзак с наименьшей загрузкой, если влезает.
     """
     n = len(weights)
     m = len(capacities)
-    # Сортируем индексы по убыванию отношения profit/weight
-    # Но у нас нет profits в этом контексте, поэтому для простоты сделаем случайное
-    # Лучше использовать случайное решение, так как жадное может быть слишком хорошим
     assignment = [0] * n
     current_weights = [0.0] * m
     
-    # Случайный порядок предметов
     indices = list(range(n))
     rng.shuffle(indices)
     
     for i in indices:
         w = weights[i]
-        # Пробуем положить в случайный рюкзак, если влезает, иначе не берём
-        # Для простоты выбираем рюкзак с наименьшей загрузкой
-        # (это даёт более равномерное заполнение)
         best_knap = -1
         best_load = float('inf')
         for k in range(m):
@@ -54,48 +47,62 @@ def generate_initial_solution(weights: List[float], capacities: List[float],
             assignment[i] = best_knap + 1
             current_weights[best_knap] += w
         else:
-            assignment[i] = 0  # не помещается
+            assignment[i] = 0
     return assignment
 
 
 def generate_neighbor(assignment: List[int], weights: List[float],
                       capacities: List[float], rng: random.Random,
+                      swap_probability: float = 0.3,
                       max_attempts: int = 100) -> Optional[List[int]]:
     """
-    Генерирует соседнее решение путём случайного изменения одного предмета.
-    Возвращает None, если не удалось найти допустимого соседа.
+    Генерирует соседнее решение путём случайного изменения:
+    - swap_probability: вероятность выполнить обмен вместо перемещения.
+    - С вероятностью 0.3 удаляем предмет, с вероятностью 0.7 перемещаем.
+    - Если выбран swap: меняем местами два предмета из разных рюкзаков.
     """
     n = len(assignment)
     m = len(capacities)
     
     for _ in range(max_attempts):
-        # Копируем текущее решение
         new_assignment = assignment.copy()
-        # Выбираем случайный предмет
-        idx = rng.randrange(n)
-        current_knap = assignment[idx]
-        # Генерируем новый рюкзак (0..m)
-        # С вероятностью 0.5 пробуем убрать предмет (0), иначе случайный рюкзак
-        if rng.random() < 0.3:
-            new_knap = 0
+        
+        # Решаем, какую операцию выполнить
+        if rng.random() < swap_probability and n >= 2:
+            # === SWAP: обмен двумя предметами между рюкзаками ===
+            items = [i for i, k in enumerate(assignment) if k != 0]
+            if len(items) >= 2:
+                idx1, idx2 = rng.sample(items, 2)
+                knap1, knap2 = assignment[idx1], assignment[idx2]
+                if knap1 != knap2:
+                    new_assignment[idx1] = knap2
+                    new_assignment[idx2] = knap1
+                    valid, _ = is_valid_solution(new_assignment, weights, capacities)
+                    if valid:
+                        return new_assignment
         else:
-            new_knap = rng.randint(1, m)  # 1..m
-        if new_knap == current_knap:
-            continue
-        # Проверяем допустимость нового решения (вес в рюкзаках)
-        # Вычисляем новые веса
-        new_weights = calculate_weights_per_knapsack(new_assignment, weights, m)
-        # Если меняем с существующего на другой, нужно пересчитать
-        # Для простоты пересчитаем целиком
-        valid, _ = is_valid_solution(new_assignment, weights, capacities)
-        if valid:
-            return new_assignment
+            # === MOVE: перемещение одного предмета ===
+            idx = rng.randrange(n)
+            current_knap = assignment[idx]
+            
+            # С вероятностью 0.3 пытаемся удалить, иначе переместить в другой рюкзак
+            if rng.random() < 0.3:
+                new_knap = 0
+            else:
+                options = [k for k in range(m + 1) if k != current_knap]
+                if not options:
+                    continue
+                new_knap = rng.choice(options)
+            
+            if new_knap == current_knap:
+                continue
+            
+            new_assignment[idx] = new_knap
+            valid, _ = is_valid_solution(new_assignment, weights, capacities)
+            if valid:
+                return new_assignment
+    
     return None
-
-
-def objective(assignment: List[int], profits: List[float]) -> float:
-    """Целевая функция — суммарная ценность."""
-    return calculate_profit(assignment, profits)
 
 
 @timed
@@ -103,12 +110,13 @@ def solve(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Запускает алгоритм имитации отжига.
     
-    Параметры (по умолчанию):
+    Параметры (оптимальные для n=10 по результатам тюнинга):
         - temperature: начальная температура (1000.0)
         - cooling_rate: коэффициент охлаждения (0.95)
-        - iterations_per_temp: итераций на одну температуру (100)
+        - iterations_per_temp: итераций на одну температуру (50)
         - min_temperature: минимальная температура (0.001)
-        - seed: зерно для случайности (если не указано, используется random)
+        - swap_probability: вероятность swap-операции (0.2)
+        - seed: зерно для случайности
     """
     weights = instance['weights']
     profits = instance['profits']
@@ -116,61 +124,57 @@ def solve(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     n = len(weights)
     m = len(capacities)
     
-    # Извлекаем параметры с значениями по умолчанию
+    # Извлекаем параметры с оптимальными значениями по умолчанию
     temperature = params.get('temperature', 1000.0)
     cooling_rate = params.get('cooling_rate', 0.95)
-    iterations_per_temp = params.get('iterations_per_temp', 100)
+    iterations_per_temp = params.get('iterations_per_temp', 50)
     min_temperature = params.get('min_temperature', 0.001)
+    swap_probability = params.get('swap_probability', 0.2)
     seed = params.get('seed', None)
     
-    # Инициализируем генератор случайных чисел
     rng = random.Random(seed) if seed is not None else random.Random()
     
     # Генерируем начальное решение
     current_assignment = generate_initial_solution(weights, capacities, rng)
-    current_profit = objective(current_assignment, profits)
+    current_profit = calculate_profit(current_assignment, profits)
     best_assignment = current_assignment.copy()
     best_profit = current_profit
     
     # Основной цикл
+    iteration_count = 0
     while temperature > min_temperature:
         for _ in range(iterations_per_temp):
-            # Генерируем соседа
-            neighbor = generate_neighbor(current_assignment, weights, capacities, rng)
+            iteration_count += 1
+            neighbor = generate_neighbor(
+                current_assignment, weights, capacities, rng,
+                swap_probability=swap_probability,
+                max_attempts=100
+            )
             if neighbor is None:
                 continue
-            neighbor_profit = objective(neighbor, profits)
+            neighbor_profit = calculate_profit(neighbor, profits)
             delta = neighbor_profit - current_profit
             
-            # Принимаем решение
             if delta > 0:
-                # Улучшение — всегда принимаем
                 current_assignment = neighbor
                 current_profit = neighbor_profit
                 if current_profit > best_profit:
                     best_assignment = current_assignment.copy()
                     best_profit = current_profit
             else:
-                # Ухудшение — принимаем с вероятностью exp(delta / temperature)
                 if rng.random() < math.exp(delta / temperature):
                     current_assignment = neighbor
                     current_profit = neighbor_profit
         
-        # Охлаждение
         temperature *= cooling_rate
     
-    # Проверяем допустимость лучшего решения
     valid, weights_per_knap = is_valid_solution(best_assignment, weights, capacities)
-    if not valid:
-        # Если по каким-то причинам решение недопустимо, возвращаем лучшее из допустимых
-        # (но такого быть не должно)
-        pass
     
     return {
         'profit': best_profit,
         'assignment': best_assignment,
         'weights_per_knapsack': weights_per_knap,
-        'iterations': 0,  # Мы не считаем точное число итераций, оставим 0
+        'iterations': iteration_count,
         'params_used': params,
-        'is_optimal': False  # SA не гарантирует оптимальность
+        'is_optimal': False
     }
