@@ -5,7 +5,7 @@
 import csv
 import json
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from datetime import datetime
 
 
@@ -22,8 +22,8 @@ def save_results(results: List[Dict[str, Any]],
     
     priority_keys = [
         'timestamp', 'instance_id', 'n', 'm', 'algorithm', 'run_id',
-        'profit', 'time_sec', 'gap_percent', 'is_optimal',
-        'iterations', 'params', 'seed'
+        'profit', 'total_weight', 'time_sec', 'gap_percent', 'is_optimal',
+        'iterations', 'params', 'seed', 'capacities'
     ]
     other_keys = sorted([k for k in all_keys if k not in priority_keys])
     fieldnames = [k for k in priority_keys if k in all_keys] + other_keys
@@ -39,7 +39,7 @@ def save_results(results: List[Dict[str, Any]],
             processed_row = {}
             for key, value in row.items():
                 if key in ['params', 'metadata'] and isinstance(value, dict):
-                    processed_row[key] = json.dumps(value, ensure_ascii=False)
+                    processed_row[key] = json.dumps(value, ensure_ascii=False, sort_keys=True)
                 elif isinstance(value, list):
                     processed_row[key] = json.dumps(value, ensure_ascii=False)
                 else:
@@ -64,16 +64,42 @@ def load_optimal_profits(results_path: Path) -> Dict[tuple, float]:
     with open(results_path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # Ищем записи брутфорса, помеченные как оптимальные
             if row.get('algorithm') == 'brute' and row.get('is_optimal') == 'True':
+                try:
+                    instance_id = int(row['instance_id'])
+                    n = int(row['n'])
+                    profit = float(row['profit'])
+                    key = (instance_id, n)
+                    if key not in optimal or profit > optimal[key]:
+                        optimal[key] = profit
+                except (ValueError, KeyError):
+                    continue
+    return optimal
+
+
+def load_existing_keys(results_path: Path) -> Set[tuple]:
+    """
+    Загружает множество уже существующих ключей (instance_id, n, algorithm, params_str)
+    из CSV-файла результатов, чтобы избежать повторных вычислений.
+    """
+    keys = set()
+    if not results_path.exists():
+        return keys
+    
+    with open(results_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
                 instance_id = int(row['instance_id'])
                 n = int(row['n'])
-                profit = float(row['profit'])
-                # Если для этого instance_id уже есть значение, берём максимум
-                key = (instance_id, n)
-                if key not in optimal or profit > optimal[key]:
-                    optimal[key] = profit
-    return optimal
+                algorithm = row['algorithm']
+                params_str = row.get('params', '{}')
+                # Для корректного сравнения нормализуем params_str (JSON-строка)
+                # При сохранении мы используем sort_keys=True, поэтому сравнение строк корректно
+                keys.add((instance_id, n, algorithm, params_str))
+            except (ValueError, KeyError):
+                continue
+    return keys
 
 
 def format_result(instance: Dict[str, Any],
@@ -87,7 +113,11 @@ def format_result(instance: Dict[str, Any],
                   params: Dict[str, Any],
                   optimal_profit: Optional[float] = None,
                   is_optimal: Optional[bool] = None) -> Dict[str, Any]:
-    """Форматирует результат одного запуска в единый словарь для CSV."""
+    """
+    Форматирует результат одного запуска в единый словарь для CSV.
+    """
+    total_weight = sum(weights_per_knapsack)
+    
     result = {
         'timestamp': datetime.now().isoformat(),
         'instance_id': instance['instance_id'],
@@ -96,9 +126,11 @@ def format_result(instance: Dict[str, Any],
         'algorithm': algorithm_name,
         'run_id': run_id,
         'profit': profit,
+        'total_weight': total_weight,
         'time_sec': time_sec,
         'iterations': iterations,
         'params': params,
+        'capacities': instance['capacities'],
         'assignment': assignment,
         'weights_per_knapsack': weights_per_knapsack,
     }

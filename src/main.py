@@ -26,7 +26,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 # Добавляем пути для импорта модулей
 sys.path.append(str(Path(__file__).parent))
@@ -38,7 +38,12 @@ from core.loader import (
     load_all_instances,
     get_available_n
 )
-from core.result_saver import append_result, load_optimal_profits, format_result
+from core.result_saver import (
+    append_result,
+    load_optimal_profits,
+    load_existing_keys,
+    format_result
+)
 from core.utils import is_valid_solution
 from core.timer import timed
 
@@ -61,13 +66,27 @@ def run_algorithm_on_instance(algorithm_func, instance: Dict[str, Any],
                               params: Dict[str, Any], runs: int = 1,
                               algorithm_name: str = None,
                               optimal_profit: Optional[float] = None,
-                              result_writer=None) -> None:
+                              result_writer=None,
+                              existing_keys: Set[tuple] = None) -> None:
     """
     Запускает алгоритм на одном экземпляре заданное число раз.
     Результаты сразу записываются через result_writer (прогрессивно).
+    Если уже есть результаты с такими же параметрами, пропускает.
     """
     if algorithm_name is None:
         algorithm_name = algorithm_func.__name__
+
+    # Преобразуем params в каноническую JSON-строку для сравнения
+    params_str = json.dumps(params, sort_keys=True, ensure_ascii=False)
+    
+    # Проверяем, есть ли уже результаты для этого (instance_id, n, algorithm, params)
+    instance_id = instance['instance_id']
+    n = instance['n']
+    key = (instance_id, n, algorithm_name, params_str)
+    
+    if existing_keys is not None and key in existing_keys:
+        print(f"    Пропускаем: уже есть результаты для алгоритма {algorithm_name} на этом экземпляре с такими параметрами")
+        return
 
     for run_id in range(1, runs + 1):
         # Запускаем алгоритм
@@ -96,6 +115,10 @@ def run_algorithm_on_instance(algorithm_func, instance: Dict[str, Any],
         )
         # Прогрессивно записываем
         result_writer(record)
+    
+    # Добавляем ключ в множество существующих (чтобы не дублировать в рамках текущего запуска)
+    if existing_keys is not None:
+        existing_keys.add(key)
 
 
 def main():
@@ -116,7 +139,7 @@ def main():
     parser.add_argument('--all-algorithms', action='store_true',
                         help='Запустить все доступные алгоритмы')
 
-    # Выбор данных (не взаимоисключающие, но логика проверяет, что указан ровно один способ)
+    # Выбор данных
     parser.add_argument('--instance', type=str,
                         help='Путь к конкретному экземпляру (папка instance_XXXX)')
     parser.add_argument('--n', type=int,
@@ -143,17 +166,14 @@ def main():
     args = parser.parse_args()
 
     # Проверка корректности комбинации аргументов выбора данных
-    # Определяем, какой способ выбора данных указан
     has_instance = args.instance is not None
     has_n = args.n is not None
     has_range = (args.n_min is not None) or (args.n_max is not None)
     has_all = args.all
 
-    # Проверяем, что n-min и n-max заданы вместе
     if (args.n_min is not None) != (args.n_max is not None):
         parser.error("--n-min и --n-max должны указываться вместе")
 
-    # Проверяем, что указан ровно один способ выбора данных
     ways = [has_instance, has_n, has_range, has_all]
     if sum(ways) != 1:
         parser.error("Необходимо указать ровно один способ выбора данных: --instance, --n, --n-min/--n-max или --all")
@@ -207,16 +227,19 @@ def main():
             sys.exit(1)
         print(f"Загружено {len(instances)} экземпляров для всех n")
 
-    # Сортируем экземпляры по n и id для воспроизводимости
     instances.sort(key=lambda x: (x['n'], x['instance_id']))
 
-    # Загружаем оптимальные значения (если есть файл с результатами брутфорса)
+    # Загружаем оптимальные значения
     results_file = Path(args.output_dir) / 'full_results.csv'
     optimal_profits = load_optimal_profits(results_file)
     if optimal_profits:
         print(f"Загружено {len(optimal_profits)} оптимальных значений из {results_file}")
 
-    # Готовим папку для результатов
+    # Загружаем существующие ключи, чтобы избежать повторных вычислений
+    existing_keys = load_existing_keys(results_file)
+    if existing_keys:
+        print(f"Загружено {len(existing_keys)} существующих записей из {results_file}")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -229,22 +252,18 @@ def main():
         print(f"\nЗапуск алгоритма: {algo_name}")
         total = len(instances)
 
-        # Для каждого экземпляра
         for idx, instance in enumerate(instances, start=1):
             n = instance['n']
             instance_id = instance['instance_id']
 
-            # === ЗАЩИТА ОТ ДУРАКА ДЛЯ БРУТФОРСА ===
             if algo_name == 'brute' and n > BRUTE_MAX_N:
                 print(f"  [{idx}/{total}] Пропускаем n={n}, id={instance_id} (слишком большой для брутфорса, > {BRUTE_MAX_N})")
                 continue
 
             print(f"  [{idx}/{total}] n={n}, id={instance_id}")
 
-            # Получаем оптимальную прибыль для этого экземпляра (если есть)
             opt_profit = optimal_profits.get((instance_id, n), None)
 
-            # Запускаем алгоритм (результаты пишутся прогрессивно)
             run_algorithm_on_instance(
                 algorithm_func=algo_func,
                 instance=instance,
@@ -252,7 +271,8 @@ def main():
                 runs=args.runs,
                 algorithm_name=algo_name,
                 optimal_profit=opt_profit,
-                result_writer=writer
+                result_writer=writer,
+                existing_keys=existing_keys
             )
 
     print(f"\nВсе результаты сохранены в {results_file}")
