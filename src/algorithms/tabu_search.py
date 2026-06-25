@@ -1,6 +1,12 @@
 """
 Алгоритм табу-поиска (Tabu Search) для задачи о нескольких рюкзаках.
 Поддерживает перемещения и обмены предметов, табу-список, аспирацию и перезапуск.
+
+Рекомендуемые параметры (по умолчанию) – результат тюнинга:
+    tabu_tenure = 15
+    max_iterations = 1000
+    neighborhood_size = 20
+    swap_probability = 0.3
 """
 
 import random
@@ -46,9 +52,9 @@ def generate_initial_solution(weights: List[float], capacities: List[float],
 def solve(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Параметры (рекомендуемые после тюнинга):
-        tabu_tenure = 10
+        tabu_tenure = 15
         max_iterations = 1000
-        neighborhood_size = 50
+        neighborhood_size = 20
         swap_probability = 0.3
     """
     weights = instance['weights']
@@ -57,10 +63,10 @@ def solve(instance: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
     n = len(weights)
     m = len(capacities)
 
-    # Параметры
-    tabu_tenure = params.get('tabu_tenure', 10)
+    # Параметры по умолчанию – оптимальные
+    tabu_tenure = params.get('tabu_tenure', 15)
     max_iterations = params.get('max_iterations', 1000)
-    neighborhood_size = params.get('neighborhood_size', 50)
+    neighborhood_size = params.get('neighborhood_size', 20)
     swap_probability = params.get('swap_probability', 0.3)
     seed = params.get('seed', None)
     rng = random.Random(seed) if seed is not None else random.Random()
