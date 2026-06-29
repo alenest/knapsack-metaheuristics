@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Скрипт для первичного анализа результатов экспериментов.
-Читает full_results.csv, строит графики и выводит сводные таблицы.
-Автоматически адаптируется под любые алгоритмы, добавленные в CSV.
+Скрипт для анализа результатов экспериментов.
+Генерирует как общие графики, так и отдельные для каждой размерности.
+Автоматически подхватывает новые алгоритмы.
 """
 
 import pandas as pd
@@ -16,26 +16,33 @@ from pathlib import Path
 # ----------------------------------------------------------------------
 # 1. Настройки
 # ----------------------------------------------------------------------
-INPUT_CSV = Path("results/full_results.csv")   # путь к исходным данным
-OUTPUT_DIR = Path("analysis/figures")          # папка для сохранения графиков
+INPUT_CSV = Path("results/full_results.csv")
+OUTPUT_DIR = Path("analysis/figures")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Отключаем предупреждения (для чистоты вывода)
+import warnings
+warnings.filterwarnings("ignore")
 
 # Стиль графиков
 sns.set_style("whitegrid")
 sns.set_palette("Set2")
 plt.rcParams["figure.figsize"] = (10, 6)
 plt.rcParams["font.size"] = 12
+plt.rcParams["axes.labelsize"] = 12
+plt.rcParams["axes.titlesize"] = 14
+plt.rcParams["legend.fontsize"] = 11
 
 # ----------------------------------------------------------------------
-# 2. Загрузка и предобработка данных
+# 2. Загрузка и предобработка
 # ----------------------------------------------------------------------
 print("Загрузка данных...")
 df = pd.read_csv(INPUT_CSV)
 
-# Удаляем записи тюнинга (они не нужны для основного анализа)
+# Удаляем записи тюнинга
 df = df[~df["algorithm"].str.contains("_tune", na=False)]
 
-# Преобразуем типы
+# Приводим типы
 df["instance_id"] = df["instance_id"].astype(int)
 df["n"] = df["n"].astype(int)
 df["profit"] = df["profit"].astype(float)
@@ -46,7 +53,7 @@ print(f"Загружено записей: {len(df)}")
 print(f"Уникальные алгоритмы: {df['algorithm'].unique().tolist()}")
 
 # ----------------------------------------------------------------------
-# 3. Вычисление оптимальной прибыли (из брутфорса)
+# 3. Оптимальные значения (из брутфорса)
 # ----------------------------------------------------------------------
 brute = df[df["algorithm"] == "brute"].copy()
 if not brute.empty:
@@ -58,31 +65,19 @@ else:
     print("Внимание: брутфорс не найден, gap не будет вычислен.")
 
 # ----------------------------------------------------------------------
-# 4. Агрегация по запускам (для каждого экземпляра и алгоритма)
+# 4. Агрегация по запускам
 # ----------------------------------------------------------------------
-# Группируем по (instance_id, n, algorithm) и вычисляем:
-#   - лучшую прибыль (max)
-#   - медианное время (устойчиво к выбросам)
-#   - медианное количество итераций
-#   - стандартное отклонение прибыли (стабильность)
 agg = df.groupby(["instance_id", "n", "algorithm"]).agg(
     best_profit=("profit", "max"),
     median_time=("time_sec", "median"),
     median_iterations=("iterations", "median"),
     std_profit=("profit", "std")
 ).reset_index()
-
-# Заполняем NaN в std_profit (если только один запуск) значением 0
 agg["std_profit"] = agg["std_profit"].fillna(0)
 
-print(f"Агрегировано записей (уникальных экземпляр-алгоритм): {len(agg)}")
-
-# ----------------------------------------------------------------------
-# 5. Добавляем колонку с gap (относительное отклонение от оптимума)
-# ----------------------------------------------------------------------
+# Добавляем gap
 if not optimal.empty:
     agg = agg.merge(optimal, on=["instance_id", "n"], how="left")
-    # Вычисляем gap только если есть оптимальная прибыль и она > 0
     agg["gap_percent"] = np.where(
         agg["optimal_profit"].notna() & (agg["optimal_profit"] > 0),
         (agg["optimal_profit"] - agg["best_profit"]) / agg["optimal_profit"] * 100,
@@ -91,150 +86,129 @@ if not optimal.empty:
 else:
     agg["gap_percent"] = np.nan
 
-# Удаляем алгоритм brute из агрегированного датасета (он не нужен для сравнения)
+# Исключаем brute из сравнения
 agg = agg[agg["algorithm"] != "brute"]
+print(f"Агрегировано записей (уникальных экземпляр-алгоритм): {len(agg)}")
+
+# ----------------------------------------------------------------------
+# 5. Функция для построения и сохранения графиков по размерностям
+# ----------------------------------------------------------------------
+def save_plot(fig, filename, subdir=""):
+    """Сохраняет график в указанную подпапку."""
+    path = OUTPUT_DIR / subdir
+    path.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path / filename, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  - {filename} сохранён в {path}")
 
 # ----------------------------------------------------------------------
 # 6. Построение графиков
 # ----------------------------------------------------------------------
-print("Построение графиков...")
+print("\nПостроение графиков...")
+
+# --- 6.1. Общий график времени (scatter) ---
+fig, ax = plt.subplots()
+sns.scatterplot(data=agg, x="n", y="median_time", hue="algorithm", alpha=0.7, ax=ax)
+ax.set_title("Время выполнения (медиана по запускам)")
+ax.set_xlabel("Количество предметов (n)")
+ax.set_ylabel("Время, секунды")
+ax.set_yscale("log")
+ax.legend(title="Алгоритм")
+save_plot(fig, "time_scatter_all.png")
+
+# --- 6.2. Отдельные графики для каждой размерности ---
+# Для каждого уникального n строим три боксплота: gap (если есть), время, прибыль
+for n_val in sorted(agg["n"].unique()):
+    sub_data = agg[agg["n"] == n_val].copy()
+    if sub_data.empty:
+        continue
+    
+    subdir = f"n_{n_val}"
+    
+    # 6.2.1. Gap (только если есть данные)
+    gap_data = sub_data[sub_data["gap_percent"].notna()]
+    if not gap_data.empty:
+        fig, ax = plt.subplots()
+        sns.boxplot(data=gap_data, x="algorithm", y="gap_percent", ax=ax)
+        ax.set_title(f"Отклонение от оптимума (gap, %) для n={n_val}")
+        ax.set_xlabel("Алгоритм")
+        ax.set_ylabel("Gap, %")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        save_plot(fig, "gap_boxplot.png", subdir)
+    
+    # 6.2.2. Время выполнения
+    fig, ax = plt.subplots()
+    sns.boxplot(data=sub_data, x="algorithm", y="median_time", ax=ax)
+    ax.set_title(f"Время выполнения для n={n_val}")
+    ax.set_xlabel("Алгоритм")
+    ax.set_ylabel("Время, секунды")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    save_plot(fig, "time_boxplot.png", subdir)
+    
+    # 6.2.3. Лучшая прибыль
+    fig, ax = plt.subplots()
+    sns.boxplot(data=sub_data, x="algorithm", y="best_profit", ax=ax)
+    ax.set_title(f"Лучшая найденная прибыль для n={n_val}")
+    ax.set_xlabel("Алгоритм")
+    ax.set_ylabel("Прибыль")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    save_plot(fig, "profit_boxplot.png", subdir)
+    
+    # 6.2.4. Стабильность (если есть std>0)
+    stable = sub_data[sub_data["std_profit"] > 0]
+    if not stable.empty:
+        fig, ax = plt.subplots()
+        sns.boxplot(data=stable, x="algorithm", y="std_profit", ax=ax)
+        ax.set_title(f"Разброс прибыли по запускам для n={n_val}")
+        ax.set_xlabel("Алгоритм")
+        ax.set_ylabel("Стандартное отклонение прибыли")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        save_plot(fig, "stability_boxplot.png", subdir)
+
+# --- 6.3. Дополнительно: общий график прибыли для больших n (n>=50) ---
+large = agg[agg["n"] >= 50].copy()
+if not large.empty:
+    fig, ax = plt.subplots()
+    sns.boxplot(data=large, x="n", y="best_profit", hue="algorithm", ax=ax)
+    ax.set_title("Лучшая прибыль на больших размерностях")
+    ax.set_xlabel("Количество предметов (n)")
+    ax.set_ylabel("Прибыль")
+    ax.legend(title="Алгоритм")
+    save_plot(fig, "profit_large_all.png")
 
 # ----------------------------------------------------------------------
-# График 1: Boxplot gap (только для n=10,20)
-# ----------------------------------------------------------------------
-gap_data = agg[agg["n"].isin([10, 20]) & agg["gap_percent"].notna()]
-if not gap_data.empty:
-    plt.figure()
-    sns.boxplot(data=gap_data, x="n", y="gap_percent", hue="algorithm")
-    plt.title("Отклонение от оптимума (gap, %) на малых размерностях")
-    plt.xlabel("Количество предметов (n)")
-    plt.ylabel("Gap, %")
-    plt.legend(title="Алгоритм")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "gap_boxplot.png", dpi=150)
-    plt.close()
-    print("  - gap_boxplot.png сохранён")
-else:
-    print("  - пропущен (нет данных для gap)")
-
-# ----------------------------------------------------------------------
-# График 2: Scatter времени выполнения (медианное время на экземпляр)
-# ----------------------------------------------------------------------
-if not agg.empty:
-    plt.figure()
-    # Используем логарифмическую шкалу по времени, если есть большой разброс
-    sns.scatterplot(data=agg, x="n", y="median_time", hue="algorithm", alpha=0.7)
-    plt.title("Время выполнения (медиана по запускам)")
-    plt.xlabel("Количество предметов (n)")
-    plt.ylabel("Время, секунды")
-    plt.yscale("log")  # логарифмическая шкала для лучшей визуализации
-    plt.legend(title="Алгоритм")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "time_scatter.png", dpi=150)
-    plt.close()
-    print("  - time_scatter.png сохранён")
-
-# ----------------------------------------------------------------------
-# График 3: Boxplot времени по размерностям и алгоритмам
-# ----------------------------------------------------------------------
-if not agg.empty:
-    plt.figure()
-    # Создаём столбец для группировки (n + алгоритм)
-    agg["n_alg"] = agg["n"].astype(str) + " - " + agg["algorithm"]
-    sns.boxplot(data=agg, x="n_alg", y="median_time")
-    plt.title("Распределение времени выполнения (медиана по запускам)")
-    plt.xlabel("Размерность - Алгоритм")
-    plt.ylabel("Время, секунды")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "time_boxplot.png", dpi=150)
-    plt.close()
-    print("  - time_boxplot.png сохранён")
-
-# ----------------------------------------------------------------------
-# График 4: Стабильность (boxplot стандартных отклонений прибыли)
-# ----------------------------------------------------------------------
-# Используем только те алгоритмы, где есть более одного запуска (std>0)
-stability_data = agg[agg["std_profit"] > 0]
-if not stability_data.empty:
-    plt.figure()
-    # Добавим небольшой jitter для наглядности
-    sns.boxplot(data=stability_data, x="n", y="std_profit", hue="algorithm")
-    plt.title("Стабильность алгоритмов (разброс прибыли по запускам)")
-    plt.xlabel("Количество предметов (n)")
-    plt.ylabel("Стандартное отклонение прибыли")
-    plt.legend(title="Алгоритм")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "stability_boxplot.png", dpi=150)
-    plt.close()
-    print("  - stability_boxplot.png сохранён")
-else:
-    print("  - пропущен (нет данных с несколькими запусками)")
-
-# ----------------------------------------------------------------------
-# График 5: Сравнение лучшей прибыли на больших n (без эталона)
-# ----------------------------------------------------------------------
-large_data = agg[agg["n"] >= 50].copy()
-if not large_data.empty:
-    plt.figure()
-    sns.boxplot(data=large_data, x="n", y="best_profit", hue="algorithm")
-    plt.title("Лучшая найденная прибыль на больших размерностях")
-    plt.xlabel("Количество предметов (n)")
-    plt.ylabel("Прибыль")
-    plt.legend(title="Алгоритм")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "profit_large_boxplot.png", dpi=150)
-    plt.close()
-    print("  - profit_large_boxplot.png сохранён")
-
-# ----------------------------------------------------------------------
-# 7. Сводные таблицы (вывод в консоль)
+# 7. Сводная таблица с добавлением средней прибыли
 # ----------------------------------------------------------------------
 print("\n" + "="*70)
-print("СВОДНЫЕ ТАБЛИЦЫ")
+print("СВОДНАЯ ТАБЛИЦА ПО РАЗМЕРНОСТЯМ И АЛГОРИТМАМ")
 print("="*70)
 
-# Таблица 1: средние показатели по группам (n, algorithm)
 summary = agg.groupby(["n", "algorithm"]).agg(
     count=("instance_id", "count"),
     mean_gap=("gap_percent", "mean"),
     median_gap=("gap_percent", "median"),
     pct_optimal=("gap_percent", lambda x: (x == 0).mean() * 100 if len(x) > 0 else np.nan),
+    mean_profit=("best_profit", "mean"),
+    median_profit=("best_profit", "median"),
     mean_time=("median_time", "mean"),
     median_time=("median_time", "median"),
     mean_std_profit=("std_profit", "mean")
 ).reset_index()
 
-# Округлим для удобства
-for col in ["mean_gap", "median_gap", "pct_optimal", "mean_time", "median_time", "mean_std_profit"]:
+# Округление
+for col in ["mean_gap", "median_gap", "pct_optimal", "mean_profit", "median_profit",
+            "mean_time", "median_time", "mean_std_profit"]:
     if col in summary.columns:
         summary[col] = summary[col].round(4)
 
-# Выводим таблицу, группируя по n
+# Вывод по n
 for n_val in sorted(summary["n"].unique()):
     print(f"\n--- Размерность n = {n_val} ---")
     sub = summary[summary["n"] == n_val].drop(columns=["n"])
     print(sub.to_string(index=False))
 
-# ----------------------------------------------------------------------
-# 8. Сохранение сводной таблицы в CSV (опционально)
-# ----------------------------------------------------------------------
+# Сохраняем таблицу
 summary.to_csv(OUTPUT_DIR.parent / "summary_stats.csv", index=False)
 print(f"\nСводная таблица сохранена в {OUTPUT_DIR.parent / 'summary_stats.csv'}")
 
-# ----------------------------------------------------------------------
-# 9. Дополнительно: матрица корреляции (очень кратко)
-# ----------------------------------------------------------------------
-# Можно вывести корреляцию между размерностью, временем и прибылью (по лучшим результатам)
-# Это необязательно, но добавим для полноты.
-if not agg.empty:
-    corr_data = agg[["n", "best_profit", "median_time", "median_iterations"]].copy()
-    # Удалим алгоритм-зависимые выбросы? Лучше сгруппировать по n и алгоритму? 
-    # Для простоты возьмём средние по алгоритмам.
-    corr_mean = agg.groupby("n")[["best_profit", "median_time"]].mean().reset_index()
-    if len(corr_mean) > 1:
-        corr = corr_mean[["best_profit", "median_time"]].corr()
-        print("\nКорреляция между средней прибылью и временем (по размерностям):")
-        print(corr)
-
-print("\nАнализ завершён. Графики сохранены в папке:", OUTPUT_DIR)
+print("\nАнализ завершён. Все графики в папке:", OUTPUT_DIR)
